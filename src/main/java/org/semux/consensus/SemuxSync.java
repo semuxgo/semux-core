@@ -137,7 +137,8 @@ public class SemuxSync implements SyncManager {
 
             badPeers.clear();
 
-            logger.info("Syncing started, best known block = {}", targetHeight - 1);
+            logger.info("Sync manager started: current block # = {}, best known block # = {}",
+                    chain.getLatestBlockNumber(), targetHeight - 1);
 
             // [1] set up queues
             synchronized (lock) {
@@ -177,7 +178,8 @@ public class SemuxSync implements SyncManager {
             process.cancel(false);
 
             Instant end = Instant.now();
-            logger.info("Syncing finished, took {}", TimeUtil.formatDuration(Duration.between(beginningInstant, end)));
+            logger.info("Sync manager stopped: duration = {}",
+                    TimeUtil.formatDuration(Duration.between(beginningInstant, end)));
         }
     }
 
@@ -226,7 +228,7 @@ public class SemuxSync implements SyncManager {
 
             // sanity check
             if (parts.size() != data.size()) {
-                logger.debug("Part set and data do not match");
+                logger.debug("Incomplete block parts from {}:{}", channel.getRemoteIp(), channel.getRemotePort());
                 break;
             }
 
@@ -251,7 +253,7 @@ public class SemuxSync implements SyncManager {
                 Block block = Block.fromComponents(header, transactions, results, votes);
                 addBlock(block, channel);
             } catch (Exception e) {
-                logger.debug("Failed to parse a block from components", e);
+                logger.debug("Corrupted block from {}:{}", channel.getRemoteIp(), channel.getRemotePort());
             }
             break;
         }
@@ -279,7 +281,7 @@ public class SemuxSync implements SyncManager {
                 Entry<Long, Long> entry = itr.next();
 
                 if (entry.getValue() + DOWNLOAD_TIMEOUT < now) {
-                    logger.debug("Failed to download block #{}, expired", entry.getKey());
+                    logger.debug("Downloading of block #{} expired", entry.getKey());
                     toDownload.add(entry.getKey());
                     itr.remove();
                 }
@@ -308,7 +310,7 @@ public class SemuxSync implements SyncManager {
             List<Channel> channels = channelMgr.getIdleChannels().stream()
                     .filter(channel -> channel.getRemotePeer().getLatestBlockNumber() >= task)
                     .collect(Collectors.toList());
-            logger.trace("Idle peers = {}", channels.size());
+            logger.trace("Number of idle peers = {}", channels.size());
 
             // quit if no idle channels.
             if (channels.isEmpty()) {
@@ -322,28 +324,26 @@ public class SemuxSync implements SyncManager {
             if (c.getRemotePeer().getLatestBlockNumber() >= task
                     && !badPeers.contains(c.getRemotePeer().getPeerId())) {
 
-                if (config.syncFastSync()
-                // TODO: enable this following check
-                /* && support(c.getRemotePeer().getCapabilities(), Capability.FAST_SYNC) */
-                ) {
+                if (config.syncFastSync() && support(c.getRemotePeer().getCapabilities(), Capability.FAST_SYNC)) {
+
                     boolean skipVotes = fastSync
                             && (task % config.spec().getValidatorUpdateInterval()) != 0
                             && task < target.get() - 5 * config.spec().getValidatorUpdateInterval(); // safe guard
 
                     if (skipVotes) {
-                        logger.trace("Requesting block #{} from {}:{}, HEADER + TRANSACTIONS", task, c.getRemoteIp(),
+                        logger.trace("Requesting block #{} from {}:{} for HEADER + TRANSACTIONS", task, c.getRemoteIp(),
                                 c.getRemotePort());
                         c.getMessageQueue().sendMessage(new GetBlockPartsMessage(task,
                                 BlockPart.encode(BlockPart.HEADER, BlockPart.TRANSACTIONS)));
                     } else {
-                        logger.trace("Requesting block #{} from {}:{}, HEADER + TRANSACTIONS + VOTES", task,
+                        logger.trace("Requesting block #{} from {}:{} for HEADER + TRANSACTIONS + VOTES", task,
                                 c.getRemoteIp(), c.getRemotePort());
                         c.getMessageQueue().sendMessage(new GetBlockPartsMessage(task,
                                 BlockPart.encode(BlockPart.HEADER, BlockPart.TRANSACTIONS, BlockPart.VOTES)));
                     }
                 } else {
                     // for older clients
-                    logger.trace("Requesting block #{} from {}:{}, FULL BLOCK", task, c.getRemoteIp(),
+                    logger.trace("Requesting block #{} from {}:{} for FULL BLOCK", task, c.getRemoteIp(),
                             c.getRemotePort());
                     c.getMessageQueue().sendMessage(new GetBlockMessage(task));
                 }
@@ -532,9 +532,8 @@ public class SemuxSync implements SyncManager {
      * @param channel
      */
     protected void handleInvalidBlock(Block block, Channel channel) {
-        InetSocketAddress a = channel.getRemoteAddress();
-        logger.info("Invalid block, peer = {}:{}, block # = {}", a.getAddress().getHostAddress(), a.getPort(),
-                block.getNumber());
+        logger.info("Received invalid block #{} from {}:{}",
+                block.getNumber(), channel.getRemoteIp(), channel.getRemotePort());
         synchronized (lock) {
             toDownload.add(block.getNumber());
             toComplete.remove(block.getNumber());

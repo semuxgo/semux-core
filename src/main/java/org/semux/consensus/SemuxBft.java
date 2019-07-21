@@ -8,6 +8,8 @@ package org.semux.consensus;
 
 import static org.semux.core.Fork.UNIFORM_DISTRIBUTION;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -213,7 +215,7 @@ public class SemuxBft implements BftManager {
                     break;
                 }
             } catch (InterruptedException e) {
-                logger.info("BftManager got interrupted");
+                logger.info("Semux BFT engine got interrupted");
                 Thread.currentThread().interrupt();
                 break;
             } catch (Exception e) {
@@ -228,12 +230,16 @@ public class SemuxBft implements BftManager {
             status = Status.RUNNING;
             timer.start();
             broadcaster.start();
-            logger.info("Semux BFT manager started");
+
+            Instant start = Instant.now();
+            logger.info("Semux BFT engine started");
 
             enterNewHeight();
             eventLoop();
 
-            logger.info("Semux BFT manager stopped");
+            Instant end = Instant.now();
+            logger.info("Semux BFT engine stopped: duration = {}",
+                    TimeUtil.formatDuration(Duration.between(start, end)));
         }
     }
 
@@ -250,8 +256,9 @@ public class SemuxBft implements BftManager {
 
             status = Status.STOPPED;
             Event ev = new Event(Type.STOP);
+
             if (!events.offer(ev)) {
-                logger.error("Failed to add an event to message queue: ev = {}", ev);
+                logger.error("Failed to insert an event to the event queue: ev = {}", ev);
             }
         }
     }
@@ -283,10 +290,11 @@ public class SemuxBft implements BftManager {
         clearVotes();
         clearTimerAndEvents();
 
-        logger.info("Entered new_height: height = {}, # validators = {}", height, validators.size());
+        logger.info("Entered NEW_HEIGHT state: height = {}, # validators = {}", height, validators.size());
+
         if (isValidator()) {
             if (this.config.network() == Network.MAINNET && !SystemUtil.bench()) {
-                logger.error("You need to upgrade your computer to join the BFT consensus!");
+                logger.error("You need to upgrade your computer to participate in consensus!");
                 SystemUtil.exitAsync(SystemUtil.Code.HARDWARE_UPGRADE_NEEDED);
             }
             resetTimeout(config.bftNewHeightTimeout());
@@ -316,7 +324,7 @@ public class SemuxBft implements BftManager {
             clearVotes();
         }
 
-        logger.info("Entered propose: height = {}, view = {}, primary = {}, # connected validators = 1 + {}", height,
+        logger.info("Entered PROPOSE state: height = {}, view = {}, primary = {}, validator peers = {}", height,
                 view, isPrimary(), activeValidators.size());
 
         if (isPrimary()) {
@@ -343,8 +351,10 @@ public class SemuxBft implements BftManager {
     protected void enterValidate() {
         state = State.VALIDATE;
         resetTimeout(config.bftValidateTimeout());
-        logger.info("Entered validate: proposal = {}, votes = {} {} {}", proposal != null, validateVotes,
-                precommitVotes, commitVotes);
+
+        logger.info("Entered VALIDATE state: proposal = {}, votes = {} {} {}",
+                proposal != null ? Hex.encode(proposal.getBlockHeader().getHash()) : "N/A",
+                validateVotes, precommitVotes, commitVotes);
 
         // validate block proposal
         boolean valid = (proposal != null)
@@ -366,8 +376,10 @@ public class SemuxBft implements BftManager {
     protected void enterPreCommit() {
         state = State.PRE_COMMIT;
         resetTimeout(config.bftPreCommitTimeout());
-        logger.info("Entered pre_commit: proposal = {}, votes = {} {} {}", proposal != null, validateVotes,
-                precommitVotes, commitVotes);
+
+        logger.info("Entered PRE_COMMIT state: proposal = {}, votes = {} {} {}",
+                proposal != null ? Hex.encode(proposal.getBlockHeader().getHash()) : "N/A",
+                validateVotes, precommitVotes, commitVotes);
 
         // vote YES as long as +2/3 validators received a success block proposal
         Optional<byte[]> blockHash = validateVotes.anyApproved();
@@ -386,8 +398,10 @@ public class SemuxBft implements BftManager {
     protected void enterCommit() {
         state = State.COMMIT;
         resetTimeout(config.bftCommitTimeout());
-        logger.info("Entered commit: proposal = {}, votes = {} {} {}", proposal != null, validateVotes, precommitVotes,
-                commitVotes);
+
+        logger.info("Entered COMMIT state: proposal = {}, votes = {} {} {}",
+                proposal != null ? Hex.encode(proposal.getBlockHeader().getHash()) : "N/A",
+                validateVotes, precommitVotes, commitVotes);
 
         Optional<byte[]> blockHash = precommitVotes.anyApproved();
         if (!blockHash.isPresent()) {
@@ -414,8 +428,9 @@ public class SemuxBft implements BftManager {
 
         state = State.FINALIZE;
         resetTimeout(config.bftFinalizeTimeout());
-        logger.info("Entered finalize: proposal = {}, votes = {} {} {}", proposal != null, validateVotes,
-                precommitVotes, commitVotes);
+        logger.info("Entered FINALIZE state: proposal = {}, votes = {} {} {}",
+                proposal != null ? Hex.encode(proposal.getBlockHeader().getHash()) : "N/A",
+                validateVotes, precommitVotes, commitVotes);
 
         Optional<byte[]> blockHash = precommitVotes.anyApproved();
         Block block;
@@ -485,7 +500,7 @@ public class SemuxBft implements BftManager {
     }
 
     protected void onNewView(Proof p) {
-        logger.trace("On new_view: {}", p);
+        logger.trace("On NEW_VIEW message: proof = {}", p);
 
         if (p.getHeight() == height // at same height
                 && p.getView() > view && state != State.COMMIT && state != State.FINALIZE) {// larger view
@@ -498,13 +513,13 @@ public class SemuxBft implements BftManager {
             }
 
             // switch view
-            logger.debug("Switching view because of NEW_VIEW message: {}", p.getView());
+            logger.debug("Switching to view #{} because of NEW_VIEW message", p.getView());
             jumpToView(p.getView(), p, null);
         }
     }
 
     protected void onProposal(Proposal p) {
-        logger.trace("On proposal: {}", p);
+        logger.trace("On PROPOSE message: proposal = {}", p);
 
         if (p.getHeight() == height // at the same height
                 && (p.getView() == view && proposal == null && (state == State.NEW_HEIGHT || state == State.PROPOSE)
@@ -532,7 +547,8 @@ public class SemuxBft implements BftManager {
                 proposal = p;
             } else {
                 // switch view
-                logger.debug("Switching view because of PROPOSE message");
+                logger.debug("Switching to view #{} because of PROPOSE message", p.getView());
+
                 jumpToView(p.getView(), p.getProof(), p);
             }
         }
@@ -640,7 +656,9 @@ public class SemuxBft implements BftManager {
                 if (p.validate()) {
                     events.add(new Event(Type.PROPOSAL, m.getProposal()));
                 } else {
-                    logger.debug("Invalid proposal from {}", channel.getRemotePeer().getPeerId());
+                    logger.debug("Received invalid proposal from {}@{}:{}", channel.getRemotePeer().getPeerId(),
+                            channel.getRemoteIp(), channel.getRemotePort());
+
                     channel.getMessageQueue().disconnect(ReasonCode.BAD_PEER);
                 }
             }
@@ -654,7 +672,9 @@ public class SemuxBft implements BftManager {
                 if (vote.revalidate()) {
                     events.add(new Event(Type.VOTE, vote));
                 } else {
-                    logger.debug("Invalid vote from {}", channel.getRemotePeer().getPeerId());
+                    logger.debug("Received invalid vote from {}@{}:{}", channel.getRemotePeer().getPeerId(),
+                            channel.getRemoteIp(), channel.getRemotePort());
+
                     channel.getMessageQueue().disconnect(ReasonCode.BAD_PEER);
                 }
             }
@@ -804,7 +824,7 @@ public class SemuxBft implements BftManager {
         Block block = new Block(header, includedTxs, includedResults);
 
         long t2 = TimeUtil.currentTimeMillis();
-        logger.debug("Block creation: # txs = {}, time = {} ms", includedTxs.size(), t2 - t1);
+        logger.debug("Block proposal created: # txs = {}, duration = {} ms", includedTxs.size(), t2 - t1);
 
         return block;
     }
