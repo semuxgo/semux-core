@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.stream.Collectors;
 
@@ -133,6 +134,8 @@ public class BlockchainImpl implements Blockchain {
     private Block latestBlock;
 
     private ActivatedForks forks;
+
+    private AtomicReference<List<String>> cachedValidators = new AtomicReference<>();
 
     public BlockchainImpl(Config config, DatabaseFactory dbFactory) {
         this(config, Genesis.load(config.network()), dbFactory);
@@ -464,18 +467,22 @@ public class BlockchainImpl implements Blockchain {
 
     @Override
     public List<String> getValidators() {
-        List<String> validators = new ArrayList<>();
+        if (cachedValidators.get() == null) {
+            List<String> validators = new ArrayList<>();
 
-        byte[] v = indexDB.get(Bytes.of(TYPE_VALIDATORS));
-        if (v != null) {
-            SimpleDecoder dec = new SimpleDecoder(v);
-            int n = dec.readInt();
-            for (int i = 0; i < n; i++) {
-                validators.add(dec.readString());
+            byte[] v = indexDB.get(Bytes.of(TYPE_VALIDATORS));
+            if (v != null) {
+                SimpleDecoder dec = new SimpleDecoder(v);
+                int n = dec.readInt();
+                for (int i = 0; i < n; i++) {
+                    validators.add(dec.readString());
+                }
             }
+
+            cachedValidators.set(validators);
         }
 
-        return validators;
+        return cachedValidators.get();
     }
 
     @Override
@@ -507,6 +514,8 @@ public class BlockchainImpl implements Blockchain {
             enc.writeString(v);
         }
         indexDB.put(Bytes.of(TYPE_VALIDATORS), enc.toBytes());
+
+        cachedValidators.set(validators);
     }
 
     /**
